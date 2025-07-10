@@ -4,7 +4,6 @@ import numpy as np
 from math import atan2, degrees
 from PIL import Image
 import matplotlib.pyplot as plt
-from io import BytesIO
 
 def angle_between_lines(a1, a2, b1, b2):
     v1 = a2 - a1
@@ -17,7 +16,7 @@ def angle_between_lines(a1, a2, b1, b2):
     return angle_deg
 
 def main():
-    st.title("X-ray Angle Measurement Tool")
+    st.title("📐 X-ray Angle Measurement Tool")
     st.write("Upload a full-length lower limb X-ray to measure orthopedic angles")
 
     uploaded_file = st.file_uploader("Choose an X-ray image...", type=["jpg", "jpeg", "png"])
@@ -25,6 +24,25 @@ def main():
     if uploaded_file is not None:
         image = Image.open(uploaded_file)
         img_array = np.array(image)
+        
+        # Add image orientation controls
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            flip_horizontal = st.checkbox("Flip Horizontal (Mirror)")
+        with col2:
+            flip_vertical = st.checkbox("Flip Vertical (Upside Down)")
+        with col3:
+            rotate_90 = st.checkbox("Rotate 90°")
+        
+        # Apply transformations
+        if flip_horizontal:
+            img_array = np.fliplr(img_array)
+        if flip_vertical:
+            img_array = np.flipud(img_array)
+        if rotate_90:
+            img_array = np.rot90(img_array)
+        
+        height, width = img_array.shape[0], img_array.shape[1]
         
         if 'points' not in st.session_state:
             st.session_state.points = {
@@ -38,73 +56,80 @@ def main():
                 'ankle_center': None
             }
             st.session_state.current_point = 0
-            st.session_state.hip_points = []
-            st.session_state.circle_fitting = False
+            st.session_state.original_image = img_array.copy()
 
         point_names = list(st.session_state.points.keys())
         current_name = point_names[st.session_state.current_point]
 
-        # Display instructions
-        instructions = [
-            "1. Hip center (click several points along femoral head, then click 'Fit Circle')",
-            "2. Femoral condyles center",
-            "3. Most distal medial condyle",
-            "4. Most distal lateral condyle",
-            "5. Center of medial tibial plateau",
-            "6. Center of lateral tibial plateau",
-            "7. Center of tibia",
-            "8. Center of ankle"
-        ]
-        
-        st.subheader(f"Current Point: {current_name.replace('_', ' ').title()}")
-        st.write("Instructions:")
-        for i, instr in enumerate(instructions):
-            prefix = "➔ " if i == st.session_state.current_point else "○ "
-            st.write(prefix + instr)
-
-        # Create figure
+        # Display image with current markings
         fig, ax = plt.subplots(figsize=(10, 10))
         ax.imshow(img_array)
-        ax.set_title("Click on the image to mark points")
-
+        
         # Plot existing points
         for name, point in st.session_state.points.items():
             if point is not None:
-                ax.plot(point[0], point[1], 'ro')
-                ax.text(point[0], point[1], name.replace('_', ' '), color='yellow')
-
-        # Plot hip circle points if in progress
-        if st.session_state.circle_fitting:
-            for point in st.session_state.hip_points:
-                ax.plot(point[0], point[1], 'ro')
-
-        # Display the plot
+                # Transform points if image was flipped
+                x, y = point[0], point[1]
+                if flip_horizontal:
+                    x = width - x - 1
+                if flip_vertical:
+                    y = height - y - 1
+                if rotate_90:
+                    x, y = y, width - x - 1
+                ax.plot(x, y, 'ro')
+                ax.text(x, y, name.replace('_', ' '), color='yellow')
+        
         st.pyplot(fig)
 
-        # Point collection controls
-        if st.session_state.circle_fitting:
-            if st.button('Fit Circle'):
-                if len(st.session_state.hip_points) >= 3:
+        # Coordinate input
+        st.subheader(f"Mark {current_name.replace('_', ' ').title()}")
+        
+        col1, col2 = st.columns(2)
+        x = col1.number_input(f"X coordinate (0-{width})", 
+                            min_value=0, max_value=width, 
+                            value=width//2, key=f"{current_name}_x")
+        y = col2.number_input(f"Y coordinate (0-{height})", 
+                             min_value=0, max_value=height, 
+                             value=height//2, key=f"{current_name}_y")
+
+        if st.button(f"Save {current_name.replace('_', ' ')}"):
+            # Save original coordinates (before flipping)
+            if flip_horizontal:
+                x = width - x - 1
+            if flip_vertical:
+                y = height - y - 1
+            if rotate_90:
+                x, y = height - y - 1, x
+            st.session_state.points[current_name] = (x, y)
+            st.session_state.current_point += 1
+            st.experimental_rerun()
+
+        # Special handling for hip center (circle fitting)
+        if current_name == 'hip_center':
+            st.warning("For hip center: Mark 3+ points around femoral head circumference")
+            if st.button("Add Hip Point"):
+                if 'hip_points' not in st.session_state:
+                    st.session_state.hip_points = []
+                # Save original coordinates
+                x_orig, y_orig = x, y
+                if flip_horizontal:
+                    x_orig = width - x_orig - 1
+                if flip_vertical:
+                    y_orig = height - y_orig - 1
+                if rotate_90:
+                    x_orig, y_orig = height - y_orig - 1, x_orig
+                st.session_state.hip_points.append((x_orig, y_orig))
+                st.experimental_rerun()
+                
+            if 'hip_points' in st.session_state and len(st.session_state.hip_points) >= 3:
+                if st.button("Calculate Hip Center"):
                     points = np.array(st.session_state.hip_points)
                     A = np.column_stack([2*points, np.ones(len(points))])
                     b = (points[:, 0]**2 + points[:, 1]**2)
                     center_x, center_y, _ = np.linalg.lstsq(A, b, rcond=None)[0]
                     st.session_state.points['hip_center'] = (center_x, center_y)
                     st.session_state.current_point += 1
-                    st.session_state.circle_fitting = False
                     st.experimental_rerun()
-                else:
-                    st.warning("Need at least 3 points to fit a circle")
-        else:
-            if st.button(f'Mark {current_name.replace("_", " ")}'):
-                # For hip center, start collecting points for circle fitting
-                if current_name == 'hip_center':
-                    st.session_state.circle_fitting = True
-                    st.experimental_rerun()
-                else:
-                    # For other points, we'll use Streamlit's file uploader workaround
-                    st.warning("On mobile: Long press the image to mark points (see instructions below)")
-                    st.info("On desktop: Right-click the image and select 'Save image as', then note the coordinates")
 
         # Calculate angles when all points are marked
         if all(p is not None for p in st.session_state.points.values()):
@@ -124,37 +149,32 @@ def main():
             mpta = angle_between_lines(ac, tc, mtp, ltp)
 
             # Display results
-            st.subheader("Measurement Results")
+            st.success("Measurement Complete!")
             col1, col2 = st.columns(2)
-            col1.metric("HKA (Hip-Knee-Ankle Angle)", f"{hka:.1f}°")
-            col1.metric("JLCA (Joint Line Congruence Angle)", f"{jlca:.1f}°")
-            col2.metric("LDFA (Lateral Distal Femoral Angle)", f"{ldfa:.1f}°")
-            col2.metric("MPTA (Medial Proximal Tibial Angle)", f"{mpta:.1f}°")
+            col1.metric("HKA (Hip-Knee-Ankle)", f"{hka:.1f}°")
+            col1.metric("JLCA (Joint Line Congruence)", f"{jlca:.1f}°")
+            col2.metric("LDFA (Lateral Distal Femoral)", f"{ldafa:.1f}°")
+            col2.metric("MPTA (Medial Proximal Tibial)", f"{mpta:.1f}°")
 
-            # Draw measurement lines
+            # Draw final plot (on original image)
             fig2, ax2 = plt.subplots(figsize=(10, 10))
-            ax2.imshow(img_array)
+            ax2.imshow(st.session_state.original_image)
             
-            # Plot points
+            # Plot all points
             for name, point in st.session_state.points.items():
                 ax2.plot(point[0], point[1], 'ro')
                 ax2.text(point[0], point[1], name.replace('_', ' '), color='yellow')
-
-            # Draw lines
+            
+            # Draw measurement lines
             ax2.plot([hc[0], fc[0]], [hc[1], fc[1]], 'b-', label='Mechanical Axis Femur')
             ax2.plot([fc[0], ac[0]], [fc[1], ac[1]], 'b-', label='Mechanical Axis Tibia')
             ax2.plot([mc[0], lc[0]], [mc[1], lc[1]], 'g-', label='Femoral Condyle Line')
             ax2.plot([mtp[0], ltp[0]], [mtp[1], ltp[1]], 'r-', label='Tibial Plateau Line')
-            
             ax2.legend()
             st.pyplot(fig2)
 
-            if st.button('Reset Measurements'):
-                for key in st.session_state.points.keys():
-                    st.session_state.points[key] = None
-                st.session_state.current_point = 0
-                st.session_state.hip_points = []
-                st.session_state.circle_fitting = False
+            if st.button("Start New Measurement"):
+                st.session_state.clear()
                 st.experimental_rerun()
 
 if __name__ == "__main__":
